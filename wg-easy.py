@@ -10,7 +10,7 @@ if os.geteuid() != 0:
     print("Erro: Este script precisa ser executado como root (sudo).")
     sys.exit(1)
 
-print("=== Setup WG-Easy + Nginx + Firewall (Iptables) ===")
+print("=== Setup WG-Easy + Nginx + Firewall (Iptables) + ZERO LOGS ===")
 
 # 1. Perguntas Iniciais
 tipo = ""
@@ -37,13 +37,10 @@ def run_cmd(cmd):
     subprocess.run(cmd, shell=True, check=True, executable='/bin/bash')
 
 # 2. Limpeza brutal de lixo antigo e Instalação
-print("[1/5] Passando o rodo nas configurações antigas e instalando pacotes...")
-# Arruma qualquer instalação do dpkg que tenha ficado pela metade
+print("[1/6] Passando o rodo nas configurações antigas e instalando pacotes...")
 run_cmd("dpkg --configure -a || true")
-# Remove completamente o nginx, docker e dependências zumbis
 run_cmd("apt-get purge -y docker docker-engine docker.io containerd runc nginx nginx-common nginx-core python3-certbot-nginx || true")
 run_cmd("apt-get autoremove -y || true")
-# Apaga na força bruta a pasta do nginx pra sumir com o arquivo "proxy_ip" quebrado
 run_cmd("rm -rf /etc/nginx || true")
 
 run_cmd("apt-get update")
@@ -52,8 +49,15 @@ run_cmd("DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget nginx certb
 print("Instalando o Docker via repositório oficial...")
 run_cmd("curl -fsSL https://get.docker.com | sh")
 
+# --- INTEGRAÇÃO: Desativando logs do Docker ---
+print("Desativando logs do Docker globalmente...")
+os.makedirs("/etc/docker", exist_ok=True)
+run_cmd("echo '{\n  \"log-driver\": \"none\"\n}' > /etc/docker/daemon.json")
+run_cmd("systemctl restart docker")
+# ----------------------------------------------
+
 # 3. Configurando Docker Compose para o wg-easy
-print("[2/5] Configurando o wg-easy (Docker)...")
+print("[2/6] Configurando o wg-easy (Docker)...")
 os.makedirs("/opt/wg-easy", exist_ok=True)
 
 docker_compose_yml = f"""
@@ -86,8 +90,13 @@ with open("/opt/wg-easy/docker-compose.yml", "w") as f:
 run_cmd("cd /opt/wg-easy && docker compose up -d")
 
 # 4. Nginx e SSL
-print("[3/5] Configurando Nginx e SSL...")
+print("[3/6] Configurando Nginx e SSL...")
 run_cmd("systemctl enable nginx")
+
+# --- INTEGRAÇÃO: Desativando logs do Nginx ---
+run_cmd("sed -i 's/^[ \t]*access_log.*/\taccess_log off;/' /etc/nginx/nginx.conf")
+run_cmd("sed -i 's/^[ \t]*error_log.*/\terror_log \/dev\/null emerg;/' /etc/nginx/nginx.conf")
+# ---------------------------------------------
 
 nginx_conf = f"""
 server {{
@@ -150,8 +159,19 @@ else:
         f.write(nginx_ssl_conf)
     run_cmd("systemctl restart nginx")
 
+# --- INTEGRAÇÃO: Desativando Logs do Sistema e Limpando o Passado ---
+print("[4/6] Desativando logs gerais do sistema (journald e rsyslog)...")
+run_cmd("sed -i 's/.*Storage=.*/Storage=none/' /etc/systemd/journald.conf")
+run_cmd("systemctl restart systemd-journald")
+run_cmd("systemctl stop rsyslog || true")
+run_cmd("systemctl disable rsyslog || true")
+
+print("Apagando qualquer log residual gerado durante esta instalação...")
+run_cmd("find /var/log -type f -exec truncate -s 0 {} \\;")
+# --------------------------------------------------------------------
+
 # 5. Firewall Seguro (Iptables)
-print("[4/5] Configurando Firewall Iptables...")
+print("[5/6] Configurando Firewall Iptables...")
 run_cmd("iptables -F INPUT")
 run_cmd("iptables -P INPUT DROP")
 run_cmd("iptables -A INPUT -i lo -j ACCEPT")
@@ -162,5 +182,5 @@ run_cmd("iptables -A INPUT -p tcp --dport 443 -j ACCEPT")
 run_cmd("iptables -A INPUT -p udp --dport 51820 -j ACCEPT")
 run_cmd("iptables-save > /etc/iptables/rules.v4")
 
-print("\n[5/5] Concluído! Tudo configurado e rodando.")
+print("\n[6/6] Concluído! Tudo configurado, rodando e sem registrar logs.")
 print(f"Acesse o painel web em: https://{host}")
